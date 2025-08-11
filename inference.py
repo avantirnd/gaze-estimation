@@ -19,11 +19,11 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Gaze estimation inference")
-    parser.add_argument("--model", type=str, default="resnet34", help="Model name, default `resnet18`")
+    parser.add_argument("--model", type=str, default="mobilenetv2", help="Model name, default `resnet18`")
     parser.add_argument(
         "--weight",
         type=str,
-        default="resnet34.pt",
+        default="weights/mobilenetv2.pt",
         help="Path to gaze esimation model weights"
     )
     parser.add_argument("--view", action="store_true", default=True, help="Display the inference results")
@@ -103,6 +103,8 @@ def main(params):
             bboxes, keypoints = face_detector.detect(frame)
             for bbox, keypoint in zip(bboxes, keypoints):
                 x_min, y_min, x_max, y_max = map(int, bbox[:4])
+                x_min, y_min = max(x_min, 0), max(y_min, 0)
+                x_max, y_max = min(x_max, width), min(y_max, height), 
 
                 image = frame[y_min:y_max, x_min:x_max]
                 image = pre_process(image)
