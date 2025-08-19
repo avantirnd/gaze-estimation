@@ -59,7 +59,7 @@ class GazeEstimation:
 
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize(448),
+            transforms.Resize((448, 448)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
@@ -91,36 +91,50 @@ class GazeEstimation:
         return out
 
     @torch.no_grad()
-    def estimate_gaze(self, frame_bgr):
-        """Returns list of dicts: [{'bbox': (x1,y1,x2,y2), 'pitch_rad': float, 'yaw_rad': float}]"""
+    def estimate_gaze(self, frame_bgr, max_faces=8):
+        """
+        Batched forward pass with optional max_faces cap.
+        Returns: [{'bbox':..., 'pitch_rad':..., 'yaw_rad':...}, ...]
+        """
         h, w = frame_bgr.shape[:2]
-        detections = []
         bboxes = self._detect_faces(frame_bgr)
-        for bbox in bboxes:
-            x1, y1, x2, y2 = map(int, bbox[:4])
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
+        if not bboxes:
+            return []
+
+        if max_faces is not None:
+            bboxes = bboxes[:max_faces]
+
+        crops, keep_bboxes = [], []
+        for (x1, y1, x2, y2) in bboxes:
+            x1, y1 = max(0, int(x1)), max(0, int(y1))
+            x2, y2 = min(w, int(x2)), min(h, int(y2))
             if x2 <= x1 or y2 <= y1:
                 continue
-
             crop = frame_bgr[y1:y2, x1:x2]
             if crop.size == 0:
                 continue
+            crops.append(self._preprocess(crop).squeeze(0))
+            keep_bboxes.append((x1, y1, x2, y2))
 
-            inp = self._preprocess(crop)
-            pitch_logits, yaw_logits = self.model(inp)
+        if not crops:
+            return []
 
-            pitch_prob = F.softmax(pitch_logits, dim=1)
-            yaw_prob = F.softmax(yaw_logits, dim=1)
+        batch = torch.stack(crops, dim=0).to(self.device)  # (N,C,H,W)
+        pitch_logits, yaw_logits = self.model(batch)
 
-            pitch_deg = torch.sum(pitch_prob * self.idx_tensor, dim=1) * self.binwidth - self.angle
-            yaw_deg   = torch.sum(yaw_prob   * self.idx_tensor, dim=1) * self.binwidth - self.angle
+        pitch_prob = F.softmax(pitch_logits, dim=1)
+        yaw_prob   = F.softmax(yaw_logits,   dim=1)
 
-            pitch_rad = float(np.radians(pitch_deg.item()))
-            yaw_rad   = float(np.radians(yaw_deg.item()))
+        pitch_deg = (pitch_prob * self.idx_tensor).sum(dim=1) * self.binwidth - self.angle
+        yaw_deg   = (yaw_prob   * self.idx_tensor).sum(dim=1) * self.binwidth - self.angle
 
-            detections.append({"bbox": (x1, y1, x2, y2), "pitch_rad": pitch_rad, "yaw_rad": yaw_rad})
-        return detections
+        pitch_rad = torch.deg2rad(pitch_deg).tolist()
+        yaw_rad   = torch.deg2rad(yaw_deg).tolist()
+
+        return [
+            {"bbox": bb, "pitch_rad": p, "yaw_rad": y}
+            for bb, p, y in zip(keep_bboxes, pitch_rad, yaw_rad)
+        ]
 
     def draw(self, frame_bgr, detections):
         """Draws in-place using utils.helpers.draw_bbox_gaze"""
